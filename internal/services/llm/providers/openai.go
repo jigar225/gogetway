@@ -1,0 +1,353 @@
+package providers
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+)
+
+type OpenAIProvider struct {
+	*BaseProvider
+	apiKey  string
+	baseURL string
+	orgID   string
+	client  *http.Client
+}
+
+func NewOpenAIProvider(name string, cfg ProviderConfig) (*OpenAIProvider, error) {
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+
+	models := cfg.Models
+	if len(models) == 0 {
+		models = []string{"gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-3.5-turbo-16k"}
+	}
+
+	return &OpenAIProvider{
+		BaseProvider: NewBaseProvider(name, "openai", cfg.Priority, models),
+		apiKey:       cfg.APIKey,
+		baseURL:      baseURL,
+		orgID:        cfg.OrgID,
+		client: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}, nil
+}
+
+func (p *OpenAIProvider) ChatCompletion(ctx context.Context, request *ChatRequest) (*ChatResponse, error) {
+	// Debug logging for vision content
+	for i, msg := range request.Messages {
+		if msg.Content != nil {
+			log.Printf("Message %d (%s): content type = %T", i, msg.Role, msg.Content)
+			if contentArray, ok := msg.Content.([]interface{}); ok {
+				log.Printf("Message %d has %d content parts", i, len(contentArray))
+				for j, part := range contentArray {
+					log.Printf("  Part %d: %+v", j, part)
+				}
+			}
+		}
+	}
+
+	// Prepare the request body (swap max_tokens → max_completion_tokens for newer models)
+	reqBody, err := marshalChatRequest(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	// Only set organization header if it's explicitly provided and not empty
+	// Some API keys don't require an org ID and sending one causes an error
+	if p.orgID != "" && p.orgID != "0" && p.orgID != "null" {
+		req.Header.Set("OpenAI-Organization", p.orgID)
+	}
+
+	// Make the request
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for errors
+	if resp.StatusCode != http.StatusOK {
+		var errResp ErrorResponse
+		if err := json.Unmarshal(body, &errResp); err != nil {
+			return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+		return nil, fmt.Errorf("OpenAI API error: %s", errResp.Error.Message)
+	}
+
+	// Parse successful response
+	var chatResp ChatResponse
+	if err := json.Unmarshal(body, &chatResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &chatResp, nil
+}
+
+func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, request *ChatRequest) (<-chan StreamResponse, error) {
+	// Create the stream channel
+	streamChan := make(chan StreamResponse, 100)
+
+	// sendStreamError sends an error message through the stream channel as a content chunk
+	// so the client can see what went wrong instead of getting an empty response.
+	sendStreamError := func(errMsg string) {
+		log.Printf("OpenAI streaming error: %s", errMsg)
+		streamChan <- StreamResponse{
+			Object: "chat.completion.chunk",
+			Model:  request.Model,
+			Choices: []StreamChoice{{
+				Index: 0,
+				Delta: Message{
+					Role:    "assistant",
+					Content: fmt.Sprintf("[Error: %s]", errMsg),
+				},
+				FinishReason: "error",
+			}},
+		}
+	}
+
+	go func() {
+		defer close(streamChan)
+
+		// Enable streaming in request
+		request.Stream = true
+
+		// Prepare the request body (swap max_tokens → max_completion_tokens for newer models)
+		reqBody, err := marshalChatRequest(request)
+		if err != nil {
+			sendStreamError(fmt.Sprintf("failed to marshal request: %v", err))
+			return
+		}
+
+		// Create HTTP request
+		req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/chat/completions", bytes.NewBuffer(reqBody))
+		if err != nil {
+			sendStreamError(fmt.Sprintf("failed to create request: %v", err))
+			return
+		}
+
+		// Set headers
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+		req.Header.Set("Accept", "text/event-stream")
+
+		// Only set organization header if it's explicitly provided and not empty
+		if p.orgID != "" && p.orgID != "0" && p.orgID != "null" {
+			req.Header.Set("OpenAI-Organization", p.orgID)
+		}
+
+		// Make the request
+		resp, err := p.client.Do(req)
+		if err != nil {
+			sendStreamError(fmt.Sprintf("request failed: %v", err))
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		// Check for errors
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			sendStreamError(fmt.Sprintf("API returned status %d: %s", resp.StatusCode, string(body)))
+			return
+		}
+
+		// Parse SSE stream
+		p.parseStreamResponse(resp.Body, streamChan)
+	}()
+
+	return streamChan, nil
+}
+
+func (p *OpenAIProvider) Completion(ctx context.Context, request *CompletionRequest) (*CompletionResponse, error) {
+	// Not implemented yet
+	return nil, fmt.Errorf("completion endpoint not implemented")
+}
+
+func (p *OpenAIProvider) CompletionStream(ctx context.Context, request *CompletionRequest) (<-chan StreamResponse, error) {
+	// Not implemented yet
+	return nil, fmt.Errorf("completion streaming not implemented")
+}
+
+func (p *OpenAIProvider) Embeddings(ctx context.Context, request *EmbeddingsRequest) (*EmbeddingsResponse, error) {
+	// Prepare the request body
+	reqBody, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", p.baseURL+"/embeddings", bytes.NewBuffer(reqBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.orgID != "" && p.orgID != "0" && p.orgID != "null" {
+		req.Header.Set("OpenAI-Organization", p.orgID)
+	}
+
+	// Make the request
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	// Check for errors
+	if resp.StatusCode != http.StatusOK {
+		var errResp ErrorResponse
+		if err := json.Unmarshal(body, &errResp); err != nil {
+			return nil, fmt.Errorf("request failed with status %d: %s", resp.StatusCode, string(body))
+		}
+		return nil, fmt.Errorf("OpenAI API error: %s", errResp.Error.Message)
+	}
+
+	// Parse successful response
+	var embResp EmbeddingsResponse
+	if err := json.Unmarshal(body, &embResp); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	return &embResp, nil
+}
+
+// parseStreamResponse parses the SSE stream response from OpenAI
+func (p *OpenAIProvider) parseStreamResponse(body io.Reader, streamChan chan<- StreamResponse) {
+	bufReader := bufio.NewReader(body)
+
+	for {
+		line, err := bufReader.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				// Log error but continue
+				log.Printf("Error reading OpenAI response: %v", err)
+			}
+			return
+		}
+
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Check for SSE data prefix
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		// Extract data
+		data := strings.TrimPrefix(line, "data: ")
+
+		// Check for end of stream
+		if data == "[DONE]" {
+			return
+		}
+
+		// Parse JSON data
+		var streamResp StreamResponse
+		if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
+			// Skip malformed data
+			continue
+		}
+
+		// Send to channel
+		streamChan <- streamResp
+	}
+}
+
+// useMaxCompletionTokens returns true for models that require max_completion_tokens
+// instead of the deprecated max_tokens parameter.
+func useMaxCompletionTokens(model string) bool {
+	// Newer OpenAI models (o-series, gpt-4.1+, gpt-5+) reject max_tokens.
+	for _, prefix := range []string{"o1", "o3", "o4", "gpt-4.1", "gpt-4.5", "gpt-5"} {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// marshalChatRequest marshals a ChatRequest, converting max_tokens to
+// max_completion_tokens for models that require it.
+func marshalChatRequest(request *ChatRequest) ([]byte, error) {
+	if request.MaxTokens != nil && useMaxCompletionTokens(request.Model) {
+		// Build a map so we can swap the field name without changing the struct.
+		data, err := json.Marshal(request)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]interface{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, err
+		}
+		if v, ok := m["max_tokens"]; ok {
+			m["max_completion_tokens"] = v
+			delete(m, "max_tokens")
+		}
+		return json.Marshal(m)
+	}
+	return json.Marshal(request)
+}
+
+func (p *OpenAIProvider) HealthCheck(ctx context.Context) error {
+	// Try a simple API call to check health
+	req, err := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/models", nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	if p.orgID != "" {
+		req.Header.Set("OpenAI-Organization", p.orgID)
+	}
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.SetHealthy(false)
+		return fmt.Errorf("health check failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		p.SetHealthy(false)
+		return fmt.Errorf("health check failed with status %d", resp.StatusCode)
+	}
+
+	p.SetHealthy(true)
+	return nil
+}

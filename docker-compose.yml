@@ -1,0 +1,90 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: goget-postgres
+    environment:
+      POSTGRES_USER: goget
+      POSTGRES_PASSWORD: goget
+      POSTGRES_DB: goget
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts:/docker-entrypoint-initdb.d
+    networks:
+      - goget-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U goget"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: goget-redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - goget-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  goget:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: goget-gateway
+    ports:
+      - "8080:8080" # Main API (+ /api/admin)
+      - "9090:9090" # Metrics
+    environment:
+      - DATABASE_URL=postgres://goget:goget@postgres:5432/goget?sslmode=disable
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-super-secret-jwt-key-change-this}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - LOG_FORMAT=${LOG_FORMAT:-json}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-sk-your-openai-api-key}
+      - OPENAI_API_KEY_1=${OPENAI_API_KEY:-sk-your-openai-api-key}
+      - OPENAI_API_KEY_2=${OPENAI_API_KEY_2:-}
+      - OPENAI_API_KEY_3=${OPENAI_API_KEY_3:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - goget_MASTER_KEY=${goget_MASTER_KEY:-sk-master-dev-key-change-in-production}
+      - AUTH_MASTER_KEY=${goget_MASTER_KEY:-sk-master-dev-key-change-in-production}
+    volumes:
+      - ./config/config.docker.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - goget-network
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://localhost:8080/health",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  goget-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
