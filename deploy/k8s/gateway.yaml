@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gogate-gateway
+  namespace: gogate
+  labels:
+    app: gogate-gateway
+spec:
+  # t3.micro nodes: start with 1 replica; bump when you have larger nodes
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gogate-gateway
+  template:
+    metadata:
+      labels:
+        app: gogate-gateway
+    spec:
+      containers:
+        - name: gateway
+          # Replace after first ECR push:
+          #   <account>.dkr.ecr.<region>.amazonaws.com/gogate-dev/gateway:latest
+          image: 798644229154.dkr.ecr.us-east-1.amazonaws.com/gogate-dev/gateway:latest
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          envFrom:
+            - configMapRef:
+                name: gogate-config
+            - secretRef:
+                name: gogate-secrets
+          # Liveness: restart container if /health fails
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Readiness: remove from Service endpoints until /ready is OK
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Tiny requests so pods fit on t3.micro leftover capacity
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gogate-gateway
+  namespace: gogate
+  labels:
+    app: gogate-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: gogate-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+# HPA min=1 while on free-tier micros; raise minReplicas with bigger nodes
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gogate-gateway
+  namespace: gogate
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gogate-gateway
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

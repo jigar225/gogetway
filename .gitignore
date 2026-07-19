@@ -154,5 +154,15 @@ ARCHITECTURE.md
 API_SPECIFICATION.md
 logs/*
 
-# Legacy deploy artifacts (removed)
-deploy/
+# Terraform local state / secrets (keep *.tf and *.tfvars.example)
+deploy/terraform/.terraform/
+deploy/terraform/*.tfstate
+deploy/terraform/*.tfstate.*
+deploy/terraform/*.tfvars
+!deploy/terraform/*.tfvars.example
+deploy/terraform/crash.log
+# Real K8s secrets — never commit (example file is OK)
+deploy/k8s/secret.yaml
+deploy/k8s/*-secret.yaml
+!deploy/k8s/secret.yaml.example
+!deploy/k8s/*-secret.yaml.example

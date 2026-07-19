@@ -1,0 +1,10 @@
+# Non-secret config. Secrets go in secret.yaml (gitignored).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gogate-config
+  namespace: gogate
+data:
+  LOG_LEVEL: "info"
+  LOG_FORMAT: "json"
+  # DATABASE_URL and REDIS_URL come from Secret after terraform apply

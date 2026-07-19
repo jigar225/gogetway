@@ -1,0 +1,13 @@
+aws_region  = "us-east-1"
+aws_profile = "jigar"
+
+project_name = "gogate"
+environment  = "dev"
+
+# Cost-conscious defaults — bump for demos if needed
+eks_desired_size = 2
+eks_min_size     = 2
+eks_max_size     = 4
+
+db_instance_class = "db.t3.micro"
+redis_node_type   = "cache.t3.micro"

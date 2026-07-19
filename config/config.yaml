@@ -32,7 +32,7 @@ database:
 redis:
   # Redis connection URL
   # Format: redis://[username:password@]host:port/database
-  url: redis://localhost:6379
+  url: redis://localhost:6380
 
   # Redis settings
   pool_size: 10 # Connection pool size
@@ -162,61 +162,75 @@ model_list:
   # -------------------------
 
   # GPT-4 deployment
-  - model_name: my-gpt-4 # Name users call in API requests
-    params:
-      model: gpt-4 # Actual OpenAI model name
-      api_key: ${OPENAI_API_KEY} # API key from environment variable
-    # Optional rate limits (requests/tokens per minute)
-    rpm: 500 # Requests per minute
-    tpm: 30000 # Tokens per minute
+  # - model_name: my-gpt-4 # Name users call in API requests
+  #   params:
+  #     model: gpt-4 # Actual OpenAI model name
+  #     api_key: ${OPENAI_API_KEY} # API key from environment variable
+  #   # Optional rate limits (requests/tokens per minute)
+  #   rpm: 500 # Requests per minute
+  #   tpm: 30000 # Tokens per minute
 
-  # GPT-3.5-Turbo deployment
-  - model_name: my-gpt-35-turbo
-    params:
-      model: gpt-3.5-turbo
-      api_key: ${OPENAI_API_KEY}
+  - model_name: gemini-flash
+    provider:
+      type: openai
+      model: gemini-3.5-flash
+      api_key: ${GEMINI_API_KEY}
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai
+  
+  - model_name: gemini-flash-lite
+    provider:
+      type: openai
+      model: gemini-3.1-flash-lite
+      api_key: ${GEMINI_API_KEY}
+      base_url: https://generativelanguage.googleapis.com/v1beta/openai
 
-  # GPT-3.5-Turbo-16K deployment for longer contexts
-  - model_name: my-gpt-35-turbo-16k
-    params:
-      model: gpt-3.5-turbo-16k
-      api_key: ${OPENAI_API_KEY}
+  # # GPT-3.5-Turbo deployment
+  # - model_name: my-gpt-35-turbo
+  #   params:
+  #     model: gpt-3.5-turbo
+  #     api_key: ${OPENAI_API_KEY}
 
-  # Example with custom parameters
-  - model_name: fast-gpt
-    params:
-      model: gpt-3.5-turbo
-      api_key: ${OPENAI_API_KEY}
-      temperature: 0.7 # Default temperature
-      max_tokens: 2000 # Default max tokens
-    rpm: 500
-    tpm: 100000
+  # # GPT-3.5-Turbo-16K deployment for longer contexts
+  # - model_name: my-gpt-35-turbo-16k
+  #   params:
+  #     model: gpt-3.5-turbo-16k
+  #     api_key: ${OPENAI_API_KEY}
 
-  # Multiple API keys for load balancing
-  - model_name: my-gpt-35-turbo-backup
-    params:
-      model: gpt-3.5-turbo
-      api_key: ${OPENAI_API_KEY_2} # Secondary API key
+  # # Example with custom parameters
+  # - model_name: fast-gpt
+  #   params:
+  #     model: gpt-3.5-turbo
+  #     api_key: ${OPENAI_API_KEY}
+  #     temperature: 0.7 # Default temperature
+  #     max_tokens: 2000 # Default max tokens
+  #   rpm: 500
+  #   tpm: 100000
 
-  # -------------------------
-  # Anthropic Claude Models
-  # -------------------------
+  # # Multiple API keys for load balancing
+  # - model_name: my-gpt-35-turbo-backup
+  #   params:
+  #     model: gpt-3.5-turbo
+  #     api_key: ${OPENAI_API_KEY_2} # Secondary API key
 
-  - model_name: claude-3-sonnet
-    params:
-      model: claude-3-sonnet-20240229
-      api_key: ${ANTHROPIC_API_KEY}
-      api_base: https://api.anthropic.com
-    rpm: 100
-    tpm: 100000
+  # # -------------------------
+  # # Anthropic Claude Models
+  # # -------------------------
 
-  - model_name: claude-3-haiku
-    params:
-      model: claude-3-haiku-20240307
-      api_key: ${ANTHROPIC_API_KEY}
-      api_base: https://api.anthropic.com
-    rpm: 200
-    tpm: 200000
+  # - model_name: claude-3-sonnet
+  #   params:
+  #     model: claude-3-sonnet-20240229
+  #     api_key: ${ANTHROPIC_API_KEY}
+  #     api_base: https://api.anthropic.com
+  #   rpm: 100
+  #   tpm: 100000
+
+  # - model_name: claude-3-haiku
+  #   params:
+  #     model: claude-3-haiku-20240307
+  #     api_key: ${ANTHROPIC_API_KEY}
+  #     api_base: https://api.anthropic.com
+  #   rpm: 200
+  #   tpm: 200000
 
 # ===========================
 # Model Aliases/Groups
