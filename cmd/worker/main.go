@@ -15,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/jigar225/goget/internal/core/config"
+	"github.com/jigar225/goget/internal/services/data/budget"
 	redisService "github.com/jigar225/goget/internal/services/data/redis"
 	"github.com/jigar225/goget/internal/services/worker"
 )
@@ -57,7 +58,8 @@ func main() {
 	}
 
 	// Initialize Redis services
-	budgetCache := redisService.NewBudgetCache(redisClient, logger, 5*time.Minute)
+	budgetCache := redisService.NewBudgetCache(redisClient, logger, 5*time.Minute).
+		WithLoader(budget.NewDBBudgetLoader(db))
 	usageQueue := redisService.NewUsageQueue(&redisService.UsageQueueConfig{
 		Client:     redisClient,
 		Logger:     logger,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -230,14 +229,11 @@ func testBudgetCache(t *testing.T, redisClient *redis.Client, log *zap.Logger) {
 
 		wg.Wait()
 
-		// Get the spent value directly from Redis (IncrementSpent uses separate key)
-		spentKey := fmt.Sprintf("budget:%s:%s:spent", entityType, entityID)
-		spentStr, err := redisClient.Get(context.Background(), spentKey).Result()
+		status, err := cache.GetBudgetStats(context.Background(), entityType, entityID)
 		assert.NoError(t, err)
-
-		spent, err := strconv.ParseFloat(spentStr, 64)
-		assert.NoError(t, err)
-		assert.InDelta(t, float64(numOperations)*usagePerOp, spent, 1.0, "Concurrent operations should be tracked")
+		assert.NotNil(t, status)
+		assert.InDelta(t, float64(numOperations)*usagePerOp, status.Spent, 1.0, "Concurrent operations should update status.Spent")
+		assert.InDelta(t, budget-float64(numOperations)*usagePerOp, status.Available, 1.0, "Available should decrease with spent")
 	})
 }
 

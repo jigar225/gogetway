@@ -104,21 +104,23 @@ func (s *UnifiedService) CheckBudget(ctx context.Context, keyID uuid.UUID, estim
 	return result, nil
 }
 
-// CheckBudgetCached performs fast budget check using Redis cache
+// CheckBudgetCached performs fast budget check using Redis cache.
+// On miss, BudgetCache loads from Postgres via its loader and populates Redis.
 func (s *UnifiedService) CheckBudgetCached(ctx context.Context, entityType, entityID string, requestCost float64) (bool, error) {
 	if s.budgetCache == nil {
-		// Fallback to database check if cache not available
 		return s.checkBudgetFromDB(ctx, entityType, entityID, requestCost)
 	}
 
-	// First check Redis cache for immediate response
 	available, err := s.budgetCache.CheckBudgetAvailable(ctx, entityType, entityID, requestCost)
-	if err == nil {
-		return available, nil
+	if err != nil {
+		// Fail closed for consistency with the request hot path
+		s.logger.Warn("Budget cache check failed",
+			zap.Error(err),
+			zap.String("entity_type", entityType),
+			zap.String("entity_id", entityID))
+		return false, err
 	}
-
-	// Cache miss - check database and populate cache
-	return s.checkBudgetFromDB(ctx, entityType, entityID, requestCost)
+	return available, nil
 }
 
 // RecordUsage records actual usage after a request completes
@@ -194,12 +196,21 @@ func (s *UnifiedService) checkBudgetFromDB(ctx context.Context, entityType, enti
 		return false, fmt.Errorf("unsupported entity type: %s", entityType)
 	}
 
-	available := (maxBudget - currentSpend) >= requestCost
+	availableAmount := maxBudget - currentSpend
+	allowed := availableAmount >= requestCost
 
-	// Cache is automatically updated by CheckBudgetAvailable
-	// when cache miss occurs
+	// Populate Redis so subsequent hot-path checks hit cache
+	if s.budgetCache != nil {
+		isExceeded := availableAmount <= 0
+		if err := s.budgetCache.UpdateBudgetCache(ctx, entityType, entityID, availableAmount, currentSpend, maxBudget, isExceeded); err != nil {
+			s.logger.Warn("Failed to populate budget cache after DB check",
+				zap.Error(err),
+				zap.String("entity_type", entityType),
+				zap.String("entity_id", entityID))
+		}
+	}
 
-	return available, nil
+	return allowed, nil
 }
 
 // recordUsageSync records usage synchronously to database

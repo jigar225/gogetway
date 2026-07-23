@@ -12,6 +12,7 @@ import (
 	"github.com/jigar225/goget/internal/api/router"
 	"github.com/jigar225/goget/internal/core/config"
 	"github.com/jigar225/goget/internal/core/database"
+	"github.com/jigar225/goget/internal/services/data/budget"
 	"github.com/jigar225/goget/internal/services/data/cache"
 	redisService "github.com/jigar225/goget/internal/services/data/redis"
 	"github.com/jigar225/goget/internal/services/llm/models"
@@ -199,7 +200,7 @@ func main() {
 				BatchSize:  50,
 				MaxRetries: 3,
 			})
-			budgetCache := redisService.NewBudgetCache(redisClient, log, 5*time.Minute)
+			budgetCache := redisService.NewBudgetCache(redisClient, log, 5*time.Minute).WithLoader(budget.NewDBBudgetLoader(db))
 			lockManager := redisService.NewLockManager(redisClient, log)
 
 			// Create usage processor

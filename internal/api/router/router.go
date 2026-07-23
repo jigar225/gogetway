@@ -48,6 +48,12 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 		logger.Fatal("Failed to connect to Redis", zap.Error(err))
 	}
 
+	// Shared budget cache — load from Postgres on Redis miss (fail closed).
+	budgetCache := redisService.NewBudgetCache(redisClient, logger, 5*time.Minute)
+	if db != nil {
+		budgetCache = budgetCache.WithLoader(budget.NewDBBudgetLoader(db))
+	}
+
 	// Initialize auth services
 	masterKeyService := auth.NewMasterKeyService(&auth.MasterKeyConfig{
 		DB:          db,
@@ -180,9 +186,8 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 	// Public auth config (master key only)
 	r.Get("/api/auth/config", systemHandler.GetAuthConfig)
 
-	// Protected routes
+	// LLM routes — auth + budget once for both /v1 and /api/v1
 	r.Group(func(r chi.Router) {
-		// Authentication middleware
 		authMiddleware := middleware.NewAuthMiddleware(&middleware.AuthConfig{
 			Logger:           logger,
 			AuthService:      authService,
@@ -191,19 +196,15 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 		})
 		r.Use(authMiddleware.Authenticate)
 
-		// Initialize pricing cache for better performance
 		pricingCache := cache.NewPricingCache(redisClient, logger, pricingManager)
-
-		// Load all pricing data to Redis cache on startup
 		if err := pricingCache.LoadAllPricingToCache(context.Background()); err != nil {
 			logger.Warn("Failed to load pricing data to cache", zap.Error(err))
 		}
 
-		// Use async budget middleware with Redis for high performance
 		asyncBudgetMiddleware := middleware.NewAsyncBudgetMiddleware(&middleware.AsyncBudgetConfig{
 			Logger:      logger,
 			AuthService: authService,
-			BudgetCache: redisService.NewBudgetCache(redisClient, logger, 5*time.Minute),
+			BudgetCache: budgetCache,
 			EventPub:    redisService.NewEventPublisher(redisClient, logger),
 			UsageQueue: redisService.NewUsageQueue(&redisService.UsageQueueConfig{
 				Client:     redisClient,
@@ -217,85 +218,23 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 		})
 		r.Use(asyncBudgetMiddleware.EnforceBudgetAsync)
 
-		// Async system handles both budget + usage tracking via Redis
-
-		// OpenAI-compatible endpoints
 		r.Route("/v1", func(r chi.Router) {
-			// Chat completions - use a custom handler that preserves Flusher
+			// HandleFunc preserves http.Flusher for streaming
 			r.HandleFunc("/chat/completions", chatHandler.ChatCompletions)
-
-			// Anthropic Messages API format (LiteLLM compatible)
 			r.HandleFunc("/messages", messagesHandler.AnthropicMessages)
-
-			// Completions (legacy)
 			r.Post("/completions", chatHandler.Completions)
-
-			// Embeddings
 			r.Post("/embeddings", embeddingsHandler.Embeddings)
-
-			// Models
 			r.Get("/models", modelsHandler.ListModels)
 			r.Get("/models/{model}", modelsHandler.GetModel)
 		})
-	})
 
-	// API Key authentication routes
-	r.Group(func(r chi.Router) {
-		// Authentication middleware
-		authMiddleware := middleware.NewAuthMiddleware(&middleware.AuthConfig{
-			Logger:           logger,
-			AuthService:      authService,
-			MasterKeyService: masterKeyService,
-			RequireAuth:      true,
-		})
-		r.Use(authMiddleware.Authenticate)
-
-		// Initialize pricing cache for better performance
-		pricingCache := cache.NewPricingCache(redisClient, logger, pricingManager)
-
-		// Load all pricing data to Redis cache on startup
-		if err := pricingCache.LoadAllPricingToCache(context.Background()); err != nil {
-			logger.Warn("Failed to load pricing data to cache", zap.Error(err))
-		}
-
-		// Use async budget middleware with Redis for high performance
-		asyncBudgetMiddleware := middleware.NewAsyncBudgetMiddleware(&middleware.AsyncBudgetConfig{
-			Logger:      logger,
-			AuthService: authService,
-			BudgetCache: redisService.NewBudgetCache(redisClient, logger, 5*time.Minute),
-			EventPub:    redisService.NewEventPublisher(redisClient, logger),
-			UsageQueue: redisService.NewUsageQueue(&redisService.UsageQueueConfig{
-				Client:     redisClient,
-				Logger:     logger,
-				QueueName:  "usage_processing_queue",
-				BatchSize:  50,
-				MaxRetries: 3,
-			}),
-			PricingManager: pricingManager,
-			PricingCache:   pricingCache,
-		})
-		r.Use(asyncBudgetMiddleware.EnforceBudgetAsync)
-
-		// Async system handles both budget + usage tracking via Redis
-
-		// OpenAI-compatible endpoints with API key
 		r.Route("/api/v1", func(r chi.Router) {
-			// Chat completions
 			r.Post("/chat/completions", chatHandler.ChatCompletions)
-
-			// Anthropic Messages API format (LiteLLM compatible)
 			r.Post("/messages", messagesHandler.AnthropicMessages)
-
-			// Completions (legacy)
 			r.Post("/completions", chatHandler.Completions)
-
-			// Embeddings
 			r.Post("/embeddings", embeddingsHandler.Embeddings)
-
-			// Models
 			r.Get("/models", modelsHandler.ListModels)
 			r.Get("/models/{model}", modelsHandler.GetModel)
-
 		})
 	})
 
@@ -305,7 +244,7 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 		budgetService := budget.NewUnifiedService(&budget.UnifiedServiceConfig{
 			DB:          db,
 			Logger:      logger,
-			BudgetCache: redisService.NewBudgetCache(redisClient, logger, 5*time.Minute),
+			BudgetCache: budgetCache,
 			UsageQueue: redisService.NewUsageQueue(&redisService.UsageQueueConfig{
 				Client:     redisClient,
 				Logger:     logger,

@@ -127,18 +127,30 @@ func (m *AsyncBudgetMiddleware) EnforceBudgetAsync(next http.Handler) http.Handl
 			entityID = userID.String()
 		}
 
-		// Non-blocking budget check with Redis
-		budgetOk, err := m.budgetCache.CheckBudgetAvailable(r.Context(), entityType, entityID, estimatedCost)
+		// Atomically reserve estimated cost in Redis (loads from DB on cache miss).
+		// Fail closed on Redis/DB errors so pods cannot silently overspend.
+		budgetOk, err := m.budgetCache.TryReserveBudget(r.Context(), entityType, entityID, estimatedCost)
 		if err != nil {
-			// On cache error, allow request but log warning
-			m.logger.Warn("Budget cache check failed, allowing request",
+			m.logger.Error("Budget check failed, rejecting request",
 				zap.Error(err),
 				zap.String("entity", fmt.Sprintf("%s:%s", entityType, entityID)))
-			budgetOk = true
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			if encErr := json.NewEncoder(w).Encode(providers.ErrorResponse{
+				Error: providers.APIError{
+					Message: "Budget service temporarily unavailable. Please retry.",
+					Type:    "server_error",
+					Code:    "budget_unavailable",
+				},
+			}); encErr != nil {
+				log.Printf("Failed to encode budget error response: %v", encErr)
+			}
+			return
 		}
 
 		if !budgetOk {
-			m.logger.Warn("Request rejected due to cached budget limit",
+			m.logger.Warn("Request rejected due to budget limit",
 				zap.String("entity", fmt.Sprintf("%s:%s", entityType, entityID)),
 				zap.Float64("estimated_cost", estimatedCost),
 				zap.String("model", chatRequest.Model))
@@ -163,6 +175,19 @@ func (m *AsyncBudgetMiddleware) EnforceBudgetAsync(next http.Handler) http.Handl
 
 		// Process the request
 		next.ServeHTTP(wrappedWriter, r)
+
+		// Failed upstream responses must refund the reservation
+		if wrappedWriter.statusCode >= 400 {
+			go func() {
+				if refundErr := m.budgetCache.RefundSpend(context.Background(), entityType, entityID, estimatedCost); refundErr != nil {
+					m.logger.Error("Failed to refund budget reservation",
+						zap.Error(refundErr),
+						zap.String("entity", fmt.Sprintf("%s:%s", entityType, entityID)),
+						zap.Float64("amount", estimatedCost))
+				}
+			}()
+			return
+		}
 
 		// Asynchronously track usage - this is completely non-blocking
 		go m.trackUsageAsync(r.Context(), chatRequest, wrappedWriter, estimatedCost, entityType, entityID, startTime)
@@ -293,8 +318,11 @@ func (m *AsyncBudgetMiddleware) trackUsageAsync(ctx context.Context, request pro
 		return
 	}
 
-	// Asynchronously increment cached budget spent amount
-	go m.updateBudgetCacheAsync(entityType, entityID, actualCost)
+	// Reservation already held estimatedCost; settle the delta vs actual.
+	delta := actualCost - estimatedCost
+	if delta != 0 {
+		go m.updateBudgetCacheAsync(entityType, entityID, delta)
+	}
 
 	// Publish usage event for real-time monitoring (optional)
 	go func() {
@@ -335,7 +363,8 @@ func (m *AsyncBudgetMiddleware) updateBudgetCacheAsync(entityType, entityID stri
 func (m *AsyncBudgetMiddleware) isLLMEndpoint(path string) bool {
 	return strings.Contains(path, "/chat/completions") ||
 		strings.Contains(path, "/completions") ||
-		strings.Contains(path, "/embeddings")
+		strings.Contains(path, "/embeddings") ||
+		strings.Contains(path, "/messages")
 }
 
 func (m *AsyncBudgetMiddleware) estimateCost(request *providers.ChatRequest) float64 {

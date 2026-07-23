@@ -115,9 +115,11 @@ func isLLMEndpoint(path string) bool {
 		"/v1/chat/completions",
 		"/v1/completions",
 		"/v1/embeddings",
+		"/v1/messages",
 		"/chat/completions",
 		"/completions",
 		"/embeddings",
+		"/messages",
 	}
 
 	for _, llmPath := range llmPaths {
