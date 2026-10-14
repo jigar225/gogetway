@@ -67,6 +67,17 @@ jobs:
     steps: 
       - uses: actions/checkout@v4 
 
+      - name: Inspect OIDC identity
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const token = await core.getIDToken('sts.amazonaws.com');
+            const claims = JSON.parse(
+              Buffer.from(token.split('.')[1], 'base64url').toString()
+            );
+            core.info(`Subject: ${claims.sub}`);
+            core.info(`Audience: ${claims.aud}`);
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6.3.0
         with: 
