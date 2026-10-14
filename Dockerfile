@@ -39,7 +39,7 @@ WORKDIR /app
 COPY --from=builder /app/goget .
 COPY --from=builder /app/goget-worker .
 
-# Copy default config (compose usually mounts config.docker.yaml over this)
+# Copy default config (Compose mounts the same file)
 COPY --chown=goget:goget config/config.yaml ./config.yaml
 
 # Copy pricing file
@@ -52,7 +52,7 @@ RUN chown -R goget:goget /app
 USER goget
 
 # Expose ports
-EXPOSE 8080 8081 9090
+EXPOSE 8080 9090
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

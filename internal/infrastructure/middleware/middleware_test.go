@@ -299,7 +299,6 @@ func TestCacheMiddleware(t *testing.T) {
 		Cache: config.CacheConfig{
 			Enabled: true,
 			TTL:     time.Minute,
-			MaxSize: 100,
 		},
 	}
 

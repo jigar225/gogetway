@@ -50,10 +50,7 @@ func TestRouterIntegration(t *testing.T) {
 		},
 		Auth: config.AuthConfig{
 			MasterKey: "test-master-key-123",
-		},
-		JWT: config.JWTConfig{
-			SecretKey:           "test-jwt-secret-key-for-testing",
-			AccessTokenDuration: time.Hour,
+			JWTSecret: "test-jwt-secret-key-for-testing",
 		},
 		CORS: config.CORSConfig{
 			AllowedOrigins:   []string{"*"},
@@ -78,9 +75,6 @@ func TestRouterIntegration(t *testing.T) {
 	routerSettings := config.RouterSettings{
 		RoutingStrategy:     "weighted",
 		HealthCheckInterval: 30 * time.Second,
-		EnableLoadBalancing: true,
-		MaxRetries:          3,
-		DefaultTimeout:      5 * time.Second,
 	}
 	modelManager := models.NewModelManager(logger, routerSettings, nil)
 
@@ -119,6 +113,16 @@ func TestRouterIntegration(t *testing.T) {
 
 	// Create router
 	router := NewRouter(cfg, logger, modelManager, db, pricingManager)
+
+	t.Run("Configuration", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/auth/config", nil)
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var response map[string]interface{}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+		require.Equal(t, true, response["master_key_enabled"])
+	})
 
 	t.Run("Health Endpoints", func(t *testing.T) {
 		testHealthEndpoints(t, router)
@@ -298,8 +302,7 @@ func TestRouterLatencyRequirements(t *testing.T) {
 
 	cfg := &config.Config{
 		Redis: config.RedisConfig{URL: redisURL},
-		Auth:  config.AuthConfig{MasterKey: "test-key"},
-		JWT:   config.JWTConfig{SecretKey: "test-jwt-secret", AccessTokenDuration: time.Hour},
+		Auth:  config.AuthConfig{MasterKey: "test-key", JWTSecret: "test-jwt-secret"},
 		CORS:  config.CORSConfig{AllowedOrigins: []string{"*"}},
 	}
 
@@ -307,9 +310,6 @@ func TestRouterLatencyRequirements(t *testing.T) {
 	routerSettings := config.RouterSettings{
 		RoutingStrategy:     "weighted",
 		HealthCheckInterval: 30 * time.Second,
-		EnableLoadBalancing: true,
-		MaxRetries:          3,
-		DefaultTimeout:      5 * time.Second,
 	}
 	modelManager := models.NewModelManager(logger, routerSettings, nil)
 	pricingManager := config.GetPricingManager()
@@ -382,17 +382,13 @@ func TestRouterFailover(t *testing.T) {
 
 	cfg := &config.Config{
 		Redis: config.RedisConfig{URL: redisURL},
-		Auth:  config.AuthConfig{MasterKey: "test-key"},
-		JWT:   config.JWTConfig{SecretKey: "test-jwt-secret", AccessTokenDuration: time.Hour},
+		Auth:  config.AuthConfig{MasterKey: "test-key", JWTSecret: "test-jwt-secret"},
 	}
 
 	logger := logger.NewLogger("test", "info")
 	routerSettings := config.RouterSettings{
 		RoutingStrategy:     "weighted",
 		HealthCheckInterval: 30 * time.Second,
-		EnableLoadBalancing: true,
-		MaxRetries:          3,
-		DefaultTimeout:      5 * time.Second,
 	}
 	modelManager := models.NewModelManager(logger, routerSettings, nil)
 	pricingManager := config.GetPricingManager()

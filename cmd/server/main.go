@@ -19,385 +19,123 @@ import (
 	"github.com/jigar225/goget/internal/services/worker"
 	"github.com/jigar225/goget/pkg/logger"
 	"github.com/joho/godotenv"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
-type AppMode struct {
-	DatabaseAvailable bool
-	RedisAvailable    bool
-	IsLiteMode        bool
-}
-
 func main() {
-	// Load .env file if exists
-	_ = godotenv.Load()
-
-	// Load configuration
-	cfg, err := config.Load("")
-	if err != nil {
-		fmt.Printf("Failed to load configuration: %v\n", err)
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
 
-	// Initialize logger
+func run() error {
+	// .env is a local convenience; containers receive environment variables directly.
+	_ = godotenv.Load()
+	cfg, err := config.Load(os.Getenv("CONFIG_FILE"))
+	if err != nil {
+		return err
+	}
+	if err := cfg.ValidateServer(); err != nil {
+		return err
+	}
 	log, err := logger.Initialize(cfg.Logging)
 	if err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("initialize logger: %w", err)
 	}
 	defer func() { _ = log.Sync() }()
 
-	// Detect available dependencies
-	appMode := detectDependencies(cfg, log)
-
-	if appMode.IsLiteMode {
-		log.Warn("Running in LITE MODE - Limited functionality",
-			zap.Bool("database", appMode.DatabaseAvailable),
-			zap.Bool("redis", appMode.RedisAvailable))
-		log.Info("Available features in LITE MODE:",
-			zap.Strings("features", []string{
-				"LLM Proxy",
-				"Load Balancing",
-				"Multiple Model Instances",
-				"Routing Strategies",
-				"Basic Health Checks",
-			}))
-		log.Warn("Disabled features in LITE MODE:",
-			zap.Strings("disabled", []string{
-				"User Management",
-				"Authentication",
-				"Usage Tracking",
-				"Budgeting",
-				"Persistent Cache",
-				"Admin API",
-			}))
-	} else {
-		log.Info("Running in FULL MODE - All features enabled")
+	// Both dependencies are required for authenticated, budgeted requests.
+	if err := database.Initialize(&database.Config{
+		DSN: cfg.Database.URL, MaxConnections: cfg.Database.MaxConnections,
+		MaxIdleConns: cfg.Database.MaxIdleConns, ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	}); err != nil {
+		return fmt.Errorf("initialize Postgres: %w", err)
 	}
-
-	// Initialize database if available
-	if appMode.DatabaseAvailable {
-		dbConfig := &database.Config{
-			DSN:             cfg.Database.URL,
-			MaxConnections:  cfg.Database.MaxConnections,
-			MaxIdleConns:    cfg.Database.MaxIdleConns,
-			ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
-		}
-
-		if err := database.Initialize(dbConfig); err != nil {
-			log.Warn("Failed to initialize database, switching to LITE MODE", zap.Error(err))
-			appMode.DatabaseAvailable = false
-			appMode.IsLiteMode = true
-		} else {
-			defer func() { _ = database.Close() }()
-		}
+	defer func() { _ = database.Close() }()
+	if err := cache.Initialize(&cache.Config{
+		RedisURL: cfg.Redis.URL, Password: cfg.Redis.Password, DB: cfg.Redis.DB,
+		PoolSize: cfg.Redis.PoolSize,
+	}); err != nil {
+		return fmt.Errorf("initialize Redis: %w", err)
 	}
+	defer func() { _ = cache.Close() }()
+	redisClient := cache.GetClient()
+	db := database.GetDB()
 
-	// Initialize cache if Redis is available
-	if appMode.RedisAvailable && cfg.Cache.Enabled {
-		cacheConfig := &cache.Config{
-			RedisURL: cfg.Redis.URL,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-			TTL:      cfg.Cache.TTL,
-			MaxSize:  cfg.Cache.MaxSize,
-		}
-
-		if err := cache.Initialize(cacheConfig); err != nil {
-			log.Warn("Failed to initialize cache, continuing without caching", zap.Error(err))
-			appMode.RedisAvailable = false
-		} else {
-			defer func() { _ = cache.Close() }()
-		}
-	}
-
-	// Services are now initialized in the router
-	// All authentication and management functionality is handled by the unified auth service
-
-	// Initialize Redis client early for model manager and worker
-	var redisClient *redis.Client
-	if appMode.RedisAvailable {
-		opt, err := redis.ParseURL(cfg.Redis.URL)
-		if err != nil {
-			log.Warn("Failed to parse Redis URL, continuing without Redis", zap.Error(err))
-			appMode.RedisAvailable = false
-		} else {
-			// Override with explicit password and DB if provided
-			if cfg.Redis.Password != "" {
-				opt.Password = cfg.Redis.Password
-			}
-			if cfg.Redis.DB != 0 {
-				opt.DB = cfg.Redis.DB
-			}
-
-			redisClient = redis.NewClient(opt)
-
-			// Test Redis connection
-			if err := redisClient.Ping(context.Background()).Err(); err != nil {
-				log.Warn("Redis not available, continuing without Redis features", zap.Error(err))
-				redisClient = nil
-				appMode.RedisAvailable = false
-			} else {
-				log.Info("Redis connected successfully")
-			}
-		}
-	}
-
-	// Initialize model manager (always needed)
-	// Pass Redis client for distributed latency tracking (nil if Redis not available)
+	instances := cfg.ModelInstances()
 	modelManager := models.NewModelManager(log, cfg.Router, redisClient)
-	if err := modelManager.LoadModelInstances(cfg.ModelList); err != nil {
-		log.Fatal("Failed to load model instances", zap.Error(err))
+	if err := modelManager.LoadModelInstances(instances); err != nil {
+		return err
 	}
-
-	// Load routes from config.yaml
 	modelManager.LoadRoutes(cfg.Routes)
 
-	// Start periodic health checker for provider instances
-	var healthCheckerCancel context.CancelFunc
-	{
-		healthChecker := modelManager.NewHealthChecker(cfg.Router.HealthCheckInterval)
-		var healthCtx context.Context
-		healthCtx, healthCheckerCancel = context.WithCancel(context.Background())
-		go healthChecker.Start(healthCtx)
-		log.Info("Started background health checker",
-			zap.Duration("interval", cfg.Router.HealthCheckInterval))
-	}
-
-	// Initialize pricing manager (always needed for cost calculations)
 	pricingManager := config.GetPricingManager()
-	if err := pricingManager.LoadDefaultPricing("internal/config"); err != nil {
-		log.Warn("Failed to load default pricing, will use config-only pricing", zap.Error(err))
+	if err := pricingManager.LoadDefaultPricing("internal/core/config"); err != nil {
+		log.Warn("Default pricing unavailable; using configured model prices", zap.Error(err))
 	}
+	pricingManager.AddConfigOverrides(instances)
 
-	// Create routers based on mode
-	var servers []*http.Server
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
+	healthChecker := modelManager.NewHealthChecker(cfg.Router.HealthCheckInterval)
+	go healthChecker.Start(backgroundCtx)
 
-	// Main API router is always created
-	// Pass database if available (nil in lite mode)
-	var db *gorm.DB
-	if !appMode.IsLiteMode && appMode.DatabaseAvailable {
-		db = database.GetDB()
-	}
-	mainRouter := router.NewRouter(cfg, log, modelManager, db, pricingManager)
-
-	// Initialize background worker for async usage processing (if Redis available)
-	var usageProcessor *worker.UsageProcessor
-	var workerCtx context.Context
-	var workerCancel context.CancelFunc
-
-	if !appMode.IsLiteMode && appMode.RedisAvailable && db != nil && redisClient != nil {
-		// Use the Redis client initialized earlier
-		// Redis connection already verified above
-		{
-			// Initialize Redis services for worker
-			usageQueue := redisService.NewUsageQueue(&redisService.UsageQueueConfig{
-				Client:     redisClient,
-				Logger:     log,
-				QueueName:  "usage_processing_queue",
-				BatchSize:  50,
-				MaxRetries: 3,
-			})
-			budgetCache := redisService.NewBudgetCache(redisClient, log, 5*time.Minute).WithLoader(budget.NewDBBudgetLoader(db))
-			lockManager := redisService.NewLockManager(redisClient, log)
-
-			// Create usage processor
-			usageProcessor = worker.NewUsageProcessor(&worker.UsageProcessorConfig{
-				DB:                 db,
-				Logger:             log,
-				UsageQueue:         usageQueue,
-				BudgetCache:        budgetCache,
-				LockManager:        lockManager,
-				BatchSize:          100,
-				ProcessingInterval: 30 * time.Second,
-			})
-
-			// Start background worker
-			workerCtx, workerCancel = context.WithCancel(context.Background())
-			go func() {
-				log.Info("Starting background usage processor")
-				if err := usageProcessor.Start(workerCtx); err != nil {
-					log.Error("Background usage processor failed", zap.Error(err))
-				}
-			}()
-		}
-	}
-
-	// Authentication middleware is now configured in the router
-
-	servers = append(servers, &http.Server{
-		Addr:         fmt.Sprintf(":%d", cfg.Server.Port),
-		Handler:      mainRouter,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-		IdleTimeout:  cfg.Server.IdleTimeout,
+	usageProcessor := worker.NewUsageProcessor(&worker.UsageProcessorConfig{
+		DB: db, Logger: log,
+		UsageQueue: redisService.NewUsageQueue(&redisService.UsageQueueConfig{
+			Client: redisClient, Logger: log, QueueName: "usage_processing_queue", BatchSize: 50, MaxRetries: 3,
+		}),
+		BudgetCache: redisService.NewBudgetCache(redisClient, log, 5*time.Minute).WithLoader(budget.NewDBBudgetLoader(db)),
+		LockManager: redisService.NewLockManager(redisClient, log),
+		BatchSize:   100, ProcessingInterval: 30 * time.Second,
 	})
-
-	// Only create metrics router in full mode (admin is now part of main router)
-	if !appMode.IsLiteMode {
-		// Admin routes are now mounted on the main router at /api/admin
-		// This simplifies deployment and frontend access
-
-		// Create metrics router
-		metricsRouter := router.NewMetricsRouter(cfg, log)
-		servers = append(servers, &http.Server{
-			Addr:         fmt.Sprintf(":%d", cfg.Server.MetricsPort),
-			Handler:      metricsRouter,
-			ReadTimeout:  cfg.Server.ReadTimeout,
-			WriteTimeout: cfg.Server.WriteTimeout,
-			IdleTimeout:  cfg.Server.IdleTimeout,
-		})
+	if err := usageProcessor.Start(backgroundCtx); err != nil {
+		return fmt.Errorf("start usage processor: %w", err)
 	}
+	defer func() { _ = usageProcessor.Stop() }()
 
-	// Start servers in goroutines
-	for i, srv := range servers {
-		go func(s *http.Server, idx int) {
-			var serverType string
-			if appMode.IsLiteMode {
-				serverType = "Main API (LITE MODE)"
-			} else {
-				switch idx {
-				case 0:
-					serverType = "Main API (with Admin)"
-				case 1:
-					serverType = "Metrics"
-				}
-			}
-
-			log.Info(fmt.Sprintf("%s server starting", serverType),
-				zap.String("address", s.Addr))
-
+	servers := []*http.Server{
+		newServer(cfg.Server.Port, router.NewRouter(cfg, log, modelManager, db, pricingManager), cfg.Server),
+	}
+	if cfg.Monitoring.EnableMetrics {
+		servers = append(servers, newServer(cfg.Server.MetricsPort, router.NewMetricsRouter(cfg, log), cfg.Server))
+	}
+	serverErrors := make(chan error, len(servers))
+	for _, srv := range servers {
+		go func(s *http.Server) {
+			log.Info("HTTP server starting", zap.String("address", s.Addr))
 			if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatal(fmt.Sprintf("%s server failed to start", serverType),
-					zap.Error(err))
+				serverErrors <- err
 			}
-		}(srv, i)
+		}(srv)
 	}
-
-	if appMode.IsLiteMode {
-		log.Info("goget Gateway started successfully in LITE MODE",
-			zap.Int("api_port", cfg.Server.Port),
-			zap.String("mode", "LITE"),
-			zap.Bool("database", appMode.DatabaseAvailable),
-			zap.Bool("redis", appMode.RedisAvailable))
-	} else {
-		workerStatus := "disabled"
-		if usageProcessor != nil {
-			workerStatus = "running"
-		}
-		log.Info("goget Gateway started successfully in FULL MODE",
-			zap.Int("api_port", cfg.Server.Port),
-			zap.Int("admin_port", cfg.Server.AdminPort),
-			zap.Int("metrics_port", cfg.Server.MetricsPort),
-			zap.String("background_worker", workerStatus))
-	}
-
-	// Wait for interrupt signal to gracefully shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	log.Info("Shutting down servers...")
-
-	// Stop health checker
-	if healthCheckerCancel != nil {
-		log.Info("Stopping background health checker...")
-		healthCheckerCancel()
+	defer signal.Stop(quit)
+	var serverErr error
+	select {
+	case <-quit:
+	case serverErr = <-serverErrors:
 	}
 
-	// Stop background worker first
-	if workerCancel != nil {
-		log.Info("Stopping background usage processor...")
-		workerCancel()
-		if usageProcessor != nil {
-			// Give worker time to finish current batch
-			time.Sleep(2 * time.Second)
-		}
-	}
-
-	// Graceful shutdown with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulShutdown)
+	// Drain HTTP requests before stopping their background usage processor.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulShutdown)
 	defer cancel()
-
 	for _, srv := range servers {
-		if err := srv.Shutdown(ctx); err != nil {
-			log.Error("Server forced to shutdown", zap.Error(err))
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error("HTTP shutdown failed", zap.Error(err))
+			_ = srv.Close()
 		}
 	}
+	stopBackground()
 
-	log.Info("Servers shutdown complete")
+	return serverErr
 }
 
-// detectDependencies checks if PostgreSQL and Redis are available
-func detectDependencies(cfg *config.Config, log *zap.Logger) AppMode {
-	mode := AppMode{
-		DatabaseAvailable: false,
-		RedisAvailable:    false,
-		IsLiteMode:        false,
+func newServer(port int, handler http.Handler, cfg config.ServerConfig) *http.Server {
+	return &http.Server{
+		Addr: fmt.Sprintf(":%d", port), Handler: handler,
+		ReadTimeout: cfg.ReadTimeout, WriteTimeout: cfg.WriteTimeout, IdleTimeout: cfg.IdleTimeout,
 	}
-
-	// Check if database is configured and reachable
-	if cfg.Database.URL != "" {
-		log.Debug("Checking database connectivity...", zap.String("url", maskConnectionString(cfg.Database.URL)))
-		dbConfig := &database.Config{
-			DSN:             cfg.Database.URL,
-			MaxConnections:  1,
-			MaxIdleConns:    1,
-			ConnMaxLifetime: time.Second * 5,
-		}
-
-		// Try to connect with a short timeout
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := database.TestConnection(ctx, dbConfig); err == nil {
-			mode.DatabaseAvailable = true
-			log.Debug("Database is available")
-		} else {
-			log.Debug("Database is not available", zap.Error(err))
-		}
-	}
-
-	// Check if Redis is configured and reachable
-	if cfg.Redis.URL != "" && cfg.Cache.Enabled {
-		log.Debug("Checking Redis connectivity...", zap.String("url", maskConnectionString(cfg.Redis.URL)))
-		cacheConfig := &cache.Config{
-			RedisURL: cfg.Redis.URL,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-		}
-
-		// Try to connect with a short timeout
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := cache.TestConnection(ctx, cacheConfig); err == nil {
-			mode.RedisAvailable = true
-			log.Debug("Redis is available")
-		} else {
-			log.Debug("Redis is not available", zap.Error(err))
-		}
-	}
-
-	// Determine if we're in lite mode
-	mode.IsLiteMode = !mode.DatabaseAvailable || !mode.RedisAvailable
-
-	// Allow override via environment variable
-	if os.Getenv("goget_LITE_MODE") == "true" {
-		mode.IsLiteMode = true
-		log.Info("LITE MODE forced via environment variable")
-	}
-
-	return mode
-}
-
-// maskConnectionString masks sensitive parts of connection strings
-func maskConnectionString(conn string) string {
-	// Simple masking - in production, use a proper parser
-	if len(conn) > 20 {
-		return conn[:10] + "****" + conn[len(conn)-10:]
-	}
-	return "****"
 }

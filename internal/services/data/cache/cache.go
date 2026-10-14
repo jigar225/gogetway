@@ -21,7 +21,7 @@ type Config struct {
 	Password string
 	DB       int
 	TTL      time.Duration
-	MaxSize  int
+	PoolSize int
 }
 
 type Cache interface {
@@ -50,10 +50,12 @@ func Initialize(cfg *Config) error {
 		opt.DB = cfg.DB
 	}
 
+	opt.PoolSize = cfg.PoolSize
 	client = redis.NewClient(opt)
 
 	// Test connection
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return fmt.Errorf("failed to connect to redis: %w", err)
 	}
 
@@ -150,6 +152,7 @@ func IsHealthy() bool {
 	}
 
 	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
 		return false
 	}
 

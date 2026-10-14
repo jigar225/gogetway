@@ -23,7 +23,7 @@ Your App (OpenAI SDK)  →  GoGate  →  OpenAI / Anthropic
 See [QUICKSTART.md](QUICKSTART.md) for a step-by-step Docker Compose setup.
 
 ```bash
-cp .env.example .env   # set OPENAI_API_KEY, ANTHROPIC_API_KEY, goget_MASTER_KEY
+cp .env.example .env   # fill GEMINI_API_KEY, goget_MASTER_KEY, JWT_SECRET_KEY
 docker compose up -d
 ```
 
@@ -48,7 +48,7 @@ GoGate uses two credential types:
    curl -X POST http://localhost:8080/api/admin/keys \
      -H "Authorization: Bearer <jwt>" \
      -H "Content-Type: application/json" \
-     -d '{"name":"app-key","max_budget":100,"budget_duration":"monthly","models":["gpt-4o-mini"]}'
+     -d '{"name":"app-key","max_budget":100,"budget_duration":"monthly","models":["gemini-flash"]}'
    ```
 
 3. Call LLM endpoints with the virtual key:
@@ -56,7 +56,7 @@ GoGate uses two credential types:
    curl -X POST http://localhost:8080/v1/chat/completions \
      -H "Authorization: Bearer vk_..." \
      -H "Content-Type: application/json" \
-     -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"Hi"}]}'
+     -d '{"model":"gemini-flash","messages":[{"role":"user","content":"Hi"}]}'
    ```
 
 Provider API keys stay on the server — clients never see them.
@@ -106,31 +106,22 @@ Base path: `/api/admin`
 
 ## Configuration
 
-Primary config file: `config/config.yaml`. Environment variables override values (see `.env.example`).
+Use one shared file: [`config/config.yaml`](config/config.yaml). It selects the
+current Gemini models through the OpenAI-compatible adapter. OpenAI and Anthropic
+adapters remain supported; add their models explicitly when needed.
 
-Key settings:
+- `.env` supplies local secrets and connection URLs; copy `.env.example` and fill it in.
+- Docker Compose mounts the same YAML and overrides the URLs with container hostnames.
+- Kubernetes injects environment variables through its ConfigMap and Secret.
+- Environment overrides take precedence over YAML, then Go defaults.
+- `CONFIG_FILE` optionally selects another YAML file. Unknown YAML keys are errors.
 
-```yaml
-auth:
-  master_key: sk-master-dev-key-change-in-production
-  require_auth: true
+The server requires Postgres, Redis, an admin master key, a JWT signing secret,
+and a provider credential for every enabled model. There is no Lite Mode.
+Authentication remains required. Routine pool sizes, ports, and timeouts have defaults.
 
-database:
-  url: postgres://goget:goget@localhost:5432/goget?sslmode=disable
-
-redis:
-  url: redis://localhost:6379
-
-providers:
-  openai:
-    enabled: true
-    api_key: ${OPENAI_API_KEY}
-  anthropic:
-    enabled: true
-    api_key: ${ANTHROPIC_API_KEY}
-```
-
-Models are defined in `config/config.yaml` under `models:` — only OpenAI and Anthropic providers are supported in this trimmed build.
+See [CONFIGURATION.md](CONFIGURATION.md) for the settings reference, migration
+notes, and completed cleanup checklist. Never commit `.env` or real Kubernetes secrets.
 
 ## Local development
 

@@ -5,16 +5,16 @@ Get the gateway running locally in a few minutes with Docker Compose.
 ## 1. Clone and configure
 
 ```bash
-git clone https://github.com/jigar225/goget.git
-cd goget/goget_gateway
+git clone https://github.com/jigar225/gogetway.git
+cd gogetway
 cp .env.example .env
 ```
 
 Set provider keys and the admin master key in `.env`:
 
 ```env
-OPENAI_API_KEY=sk-proj-your-openai-key
-ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+GEMINI_API_KEY=your-gemini-key
+JWT_SECRET_KEY=your-long-random-signing-secret
 goget_MASTER_KEY=your-secure-admin-master-key
 ```
 
@@ -46,7 +46,7 @@ curl -s -X POST http://localhost:8080/api/admin/keys \
     "name": "dev-key",
     "max_budget": 50,
     "budget_duration": "monthly",
-    "models": ["gpt-4o-mini", "claude-3-5-sonnet-20241022"]
+    "models": ["gemini-flash", "gemini-flash-lite"]
   }'
 ```
 
@@ -66,7 +66,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer vk_..." \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "gemini-flash",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -84,7 +84,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="gemini-flash",
     messages=[{"role": "user", "content": "Hello!"}],
 )
 print(response.choices[0].message.content)
@@ -114,7 +114,7 @@ curl http://localhost:8080/api/admin/analytics/budget \
 make dev
 ```
 
-Requires Postgres and Redis — see `config/config.yaml` for connection settings.
+Requires Postgres and Redis. Run `docker compose up -d postgres redis`, then use the host URLs in `.env.example` (Redis is on port 6380). The same `config/config.yaml` selects models for both local Go and Compose. Real LLM requests can incur provider charges.
 
 ## Troubleshooting
 

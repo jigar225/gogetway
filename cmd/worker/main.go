@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/driver/postgres"
@@ -21,8 +22,9 @@ import (
 )
 
 func main() {
+	_ = godotenv.Load()
 	var (
-		configPath         = flag.String("config", "", "Path to config file")
+		configPath         = flag.String("config", os.Getenv("CONFIG_FILE"), "Path to config file or directory")
 		batchSize          = flag.Int("batch-size", 100, "Batch size for processing")
 		processingInterval = flag.Duration("interval", 30*time.Second, "Processing interval")
 		logLevel           = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
@@ -43,6 +45,10 @@ func main() {
 	cfg, err := config.Load(*configPath)
 	if err != nil {
 		logger.Fatal("Failed to load config", zap.Error(err))
+	}
+
+	if err := cfg.ValidateDependencies(); err != nil {
+		logger.Fatal("Invalid dependency configuration", zap.Error(err))
 	}
 
 	// Initialize database
@@ -175,7 +181,6 @@ func initDatabase(cfg config.DatabaseConfig, logger *zap.Logger) (*gorm.DB, erro
 	sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
 
 	logger.Info("Database connection established",
-		zap.String("url", cfg.URL),
 		zap.Int("max_connections", cfg.MaxConnections))
 
 	return db, nil
@@ -208,7 +213,6 @@ func initRedis(cfg config.RedisConfig, logger *zap.Logger) (*redis.Client, error
 	}
 
 	logger.Info("Redis connection established",
-		zap.String("url", cfg.URL),
 		zap.Int("db", cfg.DB),
 		zap.Int("pool_size", cfg.PoolSize))
 

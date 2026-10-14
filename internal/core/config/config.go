@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -12,18 +14,11 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server"`
 	Database DatabaseConfig `mapstructure:"database"`
 	Redis    RedisConfig    `mapstructure:"redis"`
-	JWT  JWTConfig  `mapstructure:"jwt"`
-	Auth AuthConfig `mapstructure:"auth"`
+	Auth     AuthConfig     `mapstructure:"auth"`
 
-	// Model configuration - internal format after conversion
-	ModelList []ModelInstance `mapstructure:"-"` // Will be populated from RawModelList
-
-	// Raw configuration from YAML
-	RawModelList []ModelConfig       `mapstructure:"model_list"` // User-friendly format
-	ModelGroups  []ModelGroup        `mapstructure:"model_groups"`
-	Router       RouterSettings      `mapstructure:"router"`
-	ModelAliases map[string][]string `mapstructure:"model_aliases"`
-	Routes       []RouteConfig       `mapstructure:"routes"`
+	ModelList []ModelConfig  `mapstructure:"model_list"`
+	Router    RouterSettings `mapstructure:"router"`
+	Routes    []RouteConfig  `mapstructure:"routes"`
 
 	Cache      CacheConfig      `mapstructure:"cache"`
 	RateLimit  RateLimitConfig  `mapstructure:"rate_limit"`
@@ -34,7 +29,6 @@ type Config struct {
 
 type ServerConfig struct {
 	Port             int           `mapstructure:"port"`
-	AdminPort        int           `mapstructure:"admin_port"`
 	MetricsPort      int           `mapstructure:"metrics_port"`
 	ReadTimeout      time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout     time.Duration `mapstructure:"write_timeout"`
@@ -56,38 +50,26 @@ type RedisConfig struct {
 	PoolSize int    `mapstructure:"pool_size"`
 }
 
-type JWTConfig struct {
-	SecretKey            string        `mapstructure:"secret_key"`
-	AccessTokenDuration  time.Duration `mapstructure:"access_token_duration"`
-	RefreshTokenDuration time.Duration `mapstructure:"refresh_token_duration"`
-}
-
 type AuthConfig struct {
-	MasterKey   string `mapstructure:"master_key"`
-	RequireAuth bool   `mapstructure:"require_auth"`
+	MasterKey string `mapstructure:"master_key"`
+	JWTSecret string `mapstructure:"jwt_secret"`
 }
 
 type CacheConfig struct {
-	Enabled  bool          `mapstructure:"enabled"`
-	TTL      time.Duration `mapstructure:"ttl"`
-	MaxSize  int           `mapstructure:"max_size"`
-	Strategy string        `mapstructure:"strategy"`
+	Enabled bool          `mapstructure:"enabled"`
+	TTL     time.Duration `mapstructure:"ttl"`
 }
 
 type RateLimitConfig struct {
-	Enabled            bool          `mapstructure:"enabled"`
-	GlobalRPM          int           `mapstructure:"global_rpm"`
-	ChatCompletionsRPM int           `mapstructure:"chat_completions_rpm"`
-	CompletionsRPM     int           `mapstructure:"completions_rpm"`
-	EmbeddingsRPM      int           `mapstructure:"embeddings_rpm"`
-	RequestsPerMinute  int           `mapstructure:"requests_per_minute"`
-	Burst              int           `mapstructure:"burst"`
-	CleanupInterval    time.Duration `mapstructure:"cleanup_interval"`
+	Enabled            bool `mapstructure:"enabled"`
+	GlobalRPM          int  `mapstructure:"global_rpm"`
+	ChatCompletionsRPM int  `mapstructure:"chat_completions_rpm"`
+	CompletionsRPM     int  `mapstructure:"completions_rpm"`
+	EmbeddingsRPM      int  `mapstructure:"embeddings_rpm"`
 }
 
 type MonitoringConfig struct {
-	EnableMetrics bool   `mapstructure:"enable_metrics"`
-	ServiceName   string `mapstructure:"service_name"`
+	EnableMetrics bool `mapstructure:"enable_metrics"`
 }
 
 type LoggingConfig struct {
@@ -105,210 +87,53 @@ type CORSConfig struct {
 	MaxAge           int      `mapstructure:"max_age"`
 }
 
-var cfg *Config
-
+// Load reads one YAML file, applies environment overrides, and returns settings.
+// An explicit path may name a YAML file or a directory containing config.yaml.
 func Load(configPath string) (*Config, error) {
-	viper.SetConfigName("config")
-	viper.SetConfigType("yaml")
+	v := viper.New()
+	v.SetConfigName("config")
+	v.SetConfigType("yaml")
 
 	if configPath != "" {
-		viper.AddConfigPath(configPath)
+		if info, err := os.Stat(configPath); err == nil && info.IsDir() {
+			v.SetConfigFile(filepath.Join(configPath, "config.yaml"))
+		} else {
+			v.SetConfigFile(configPath)
+		}
 	} else {
-		viper.AddConfigPath(".")
-		viper.AddConfigPath("./config")
-		viper.AddConfigPath("/etc/goget")
+		v.AddConfigPath(".")
+		v.AddConfigPath("./config")
+		v.AddConfigPath("/etc/goget")
 	}
 
 	// Set defaults
-	setDefaults()
+	setDefaults(v)
 
 	// Bind environment variables
-	viper.AutomaticEnv()
-	bindEnvVars()
+	bindEnvVars(v)
 
 	// Read config file if exists
-	if err := viper.ReadInConfig(); err != nil {
+	if err := v.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			return nil, fmt.Errorf("error reading config file: %w", err)
 		}
 	}
 
-	// Expand environment variables in model_list configs
-	modelList := viper.Get("model_list")
-	if models, ok := modelList.([]interface{}); ok {
-		for i, modelRaw := range models {
-			if model, ok := modelRaw.(map[string]interface{}); ok {
-				// Check both "params" (new format) and "provider" (old format)
-				var paramsMap map[string]interface{}
-				if params, ok := model["params"].(map[string]interface{}); ok {
-					paramsMap = params
-				} else if provider, ok := model["provider"].(map[string]interface{}); ok {
-					paramsMap = provider
-				}
-
-				if paramsMap != nil {
-					if apiKey, ok := paramsMap["api_key"].(string); ok {
-						// Expand environment variable if it starts with $
-						if len(apiKey) > 2 && apiKey[0] == '$' && apiKey[1] == '{' {
-							// Find the closing }
-							endIdx := len(apiKey) - 1
-							if apiKey[endIdx] == '}' {
-								envVar := apiKey[2:endIdx] // Remove ${ and }
-								if envVal := os.Getenv(envVar); envVal != "" {
-									paramsMap["api_key"] = envVal
-								}
-							}
-						}
-					}
-				}
-			}
-			models[i] = modelRaw
-		}
-		viper.Set("model_list", models)
-	}
-
 	var config Config
-	if err := viper.Unmarshal(&config); err != nil {
+	if err := v.UnmarshalExact(&config); err != nil {
 		return nil, fmt.Errorf("unable to decode config: %w", err)
 	}
 
-	// Set default router settings if not configured
-	if config.Router.RoutingStrategy == "" {
-		config.Router.RoutingStrategy = "priority"
-		config.Router.EnableLoadBalancing = true
-		config.Router.MaxRetries = 3
-		config.Router.DefaultTimeout = 60 * time.Second
-		config.Router.HealthCheckInterval = 30 * time.Second
+	// Resolve provider API keys after decoding the single supported model format.
+	for i := range config.ModelList {
+		key := config.ModelList[i].Provider.APIKey
+		if strings.HasPrefix(key, "${") && strings.HasSuffix(key, "}") {
+			config.ModelList[i].Provider.APIKey = os.Getenv(key[2 : len(key)-1])
+		}
 	}
 
-	// Convert ModelConfig to ModelInstance format
-	var convertedModels []ModelInstance
-	for _, model := range config.RawModelList {
-		instance := ConvertToModelInstance(model)
-		instance.Source = "system"
-		convertedModels = append(convertedModels, instance)
+	if err := config.validate(); err != nil {
+		return nil, err
 	}
-
-	// Set the converted models
-	config.ModelList = convertedModels
-
-	// Initialize and load pricing manager
-	pricingManager := GetPricingManager()
-	if err := pricingManager.LoadDefaultPricing("internal/config"); err != nil {
-		// Log warning but don't fail - pricing can work without default file
-		fmt.Printf("Warning: Failed to load default pricing: %v\n", err)
-	}
-
-	// Add config overrides from model instances
-	pricingManager.AddConfigOverrides(convertedModels)
-
-	cfg = &config
-	return cfg, nil
-}
-
-func setDefaults() {
-	// Server defaults
-	viper.SetDefault("server.port", 8080)
-	viper.SetDefault("server.admin_port", 8081)
-	viper.SetDefault("server.metrics_port", 9090)
-	viper.SetDefault("server.read_timeout", "30s")
-	viper.SetDefault("server.write_timeout", "300s")
-	viper.SetDefault("server.idle_timeout", "120s")
-	viper.SetDefault("server.graceful_shutdown", "30s")
-
-	// Database defaults
-	viper.SetDefault("database.max_connections", 100)
-	viper.SetDefault("database.max_idle_connections", 10)
-	viper.SetDefault("database.conn_max_lifetime", "1h")
-
-	// Redis defaults
-	viper.SetDefault("redis.db", 0)
-	viper.SetDefault("redis.pool_size", 100)
-
-	// JWT defaults
-	viper.SetDefault("jwt.access_token_duration", "15m")
-	viper.SetDefault("jwt.refresh_token_duration", "168h")
-
-	// Cache defaults
-	viper.SetDefault("cache.enabled", true)
-	viper.SetDefault("cache.ttl", "3600s")
-	viper.SetDefault("cache.max_size", 1000)
-	viper.SetDefault("cache.strategy", "lru")
-
-	// Rate limit defaults
-	viper.SetDefault("rate_limit.enabled", true)
-	viper.SetDefault("rate_limit.requests_per_minute", 600)
-	viper.SetDefault("rate_limit.burst", 10)
-	viper.SetDefault("rate_limit.cleanup_interval", "1m")
-
-	// Monitoring defaults
-	viper.SetDefault("monitoring.enable_metrics", true)
-	viper.SetDefault("monitoring.service_name", "goget")
-
-	// Logging defaults
-	viper.SetDefault("logging.level", "debug")
-	viper.SetDefault("logging.format", "console")
-	viper.SetDefault("logging.output_path", "")
-
-	// CORS defaults
-	viper.SetDefault("cors.allow_credentials", true)
-	viper.SetDefault("cors.max_age", 86400)
-
-	// Auth defaults
-	viper.SetDefault("auth.require_auth", false)
-	viper.SetDefault("auth.master_key", "")
-
-}
-
-func bindEnvVars() {
-	// Server
-	_ = viper.BindEnv("server.port", "SERVER_PORT")
-	_ = viper.BindEnv("server.admin_port", "ADMIN_PORT")
-	_ = viper.BindEnv("server.metrics_port", "METRICS_PORT")
-	_ = viper.BindEnv("server.read_timeout", "SERVER_READ_TIMEOUT")
-	_ = viper.BindEnv("server.write_timeout", "SERVER_WRITE_TIMEOUT")
-	_ = viper.BindEnv("server.idle_timeout", "SERVER_IDLE_TIMEOUT")
-
-	// Database
-	_ = viper.BindEnv("database.url", "DATABASE_URL")
-	_ = viper.BindEnv("database.max_connections", "DATABASE_MAX_CONNECTIONS")
-	_ = viper.BindEnv("database.max_idle_connections", "DATABASE_MAX_IDLE_CONNECTIONS")
-
-	// Redis
-	_ = viper.BindEnv("redis.url", "REDIS_URL")
-	_ = viper.BindEnv("redis.password", "REDIS_PASSWORD")
-	_ = viper.BindEnv("redis.db", "REDIS_DB")
-
-	// JWT
-	_ = viper.BindEnv("jwt.secret_key", "JWT_SECRET_KEY")
-	_ = viper.BindEnv("jwt.access_token_duration", "JWT_ACCESS_TOKEN_DURATION")
-	_ = viper.BindEnv("jwt.refresh_token_duration", "JWT_REFRESH_TOKEN_DURATION")
-
-	// Auth
-	_ = viper.BindEnv("auth.master_key", "goget_MASTER_KEY")
-	_ = viper.BindEnv("auth.require_auth", "goget_REQUIRE_AUTH")
-
-	// Cache
-	_ = viper.BindEnv("cache.ttl", "CACHE_TTL")
-	_ = viper.BindEnv("cache.max_size", "CACHE_MAX_SIZE")
-
-	// Rate Limiting
-	_ = viper.BindEnv("rate_limit.requests_per_minute", "RATE_LIMIT_REQUESTS_PER_MINUTE")
-	_ = viper.BindEnv("rate_limit.burst", "RATE_LIMIT_BURST")
-
-	// Monitoring
-	_ = viper.BindEnv("monitoring.enable_metrics", "ENABLE_METRICS")
-
-	// Logging
-	_ = viper.BindEnv("logging.level", "LOG_LEVEL")
-	_ = viper.BindEnv("logging.format", "LOG_FORMAT")
-
-	// CORS
-	_ = viper.BindEnv("cors.allowed_origins", "CORS_ALLOWED_ORIGINS")
-	_ = viper.BindEnv("cors.allowed_methods", "CORS_ALLOWED_METHODS")
-	_ = viper.BindEnv("cors.allowed_headers", "CORS_ALLOWED_HEADERS")
-}
-
-func Get() *Config {
-	return cfg
+	return &config, nil
 }

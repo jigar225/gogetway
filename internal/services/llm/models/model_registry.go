@@ -115,19 +115,10 @@ func (r *ModelRegistry) CreateProvider(cfg config.ProviderParams) (providers.Pro
 	providerCfg := providers.ProviderConfig{
 		Type:       cfg.Type,
 		APIKey:     cfg.APIKey,
-		APISecret:  cfg.APISecret,
 		OAuthToken: cfg.OAuthToken,
 		BaseURL:    cfg.BaseURL,
 		OrgID:      cfg.OrgID,
-		Region:     cfg.Region,
 		Enabled:    true,
-	}
-
-	// Map provider-specific fields via Extra
-	extra := make(map[string]interface{})
-
-	if len(extra) > 0 {
-		providerCfg.Extra = extra
 	}
 
 	// Use a temporary name for provider creation

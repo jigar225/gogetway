@@ -184,7 +184,7 @@ func (pc *PricingCache) RefreshCache(ctx context.Context) error {
 	}
 
 	// Reload pricing data from files/config
-	if err := pc.pricingManager.LoadDefaultPricing("internal/config"); err != nil {
+	if err := pc.pricingManager.LoadDefaultPricing("internal/core/config"); err != nil {
 		pc.logger.Error("Failed to reload pricing data from files", zap.Error(err))
 		// Continue anyway - might have config overrides
 	}

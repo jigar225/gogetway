@@ -48,15 +48,10 @@ dev-worker: ## Run the worker locally
 
 .PHONY: docker-up
 docker-up: ## Start all dependencies with Docker Compose
-	docker-compose up -d postgres redis prometheus grafana jaeger
-	@echo "Waiting for services to be ready..."
-	@sleep 5
+	docker compose up -d --wait postgres redis
 	@echo "Services are running:"
 	@echo "  PostgreSQL: localhost:5432"
-	@echo "  Redis: localhost:6379"
-	@echo "  Prometheus: localhost:9091"
-	@echo "  Grafana: localhost:3001 (admin/admin)"
-	@echo "  Jaeger: localhost:16686"
+	@echo "  Redis: localhost:6380"
 
 .PHONY: docker-down
 docker-down: ## Stop all Docker services

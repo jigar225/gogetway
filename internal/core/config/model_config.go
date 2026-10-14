@@ -50,43 +50,17 @@ type ModelInstance struct {
 
 // ProviderParams contains provider-specific parameters
 type ProviderParams struct {
-	// Provider type and model
-	Type  string `mapstructure:"type" json:"type"`   // "openai", "anthropic", "azure", "bedrock", "vertex", etc.
+	Type  string `mapstructure:"type" json:"type"`   // "openai" (including compatible APIs) or "anthropic"
 	Model string `mapstructure:"model" json:"model"` // Actual model identifier (e.g., "gpt-4-turbo-preview")
 
-	// Authentication
-	APIKey    string `mapstructure:"api_key" json:"api_key"`
-	APISecret string `mapstructure:"api_secret" json:"api_secret"` // For providers that need both
+	APIKey string `mapstructure:"api_key" json:"api_key"`
 
-	// Endpoints
-	BaseURL    string `mapstructure:"base_url" json:"base_url"`       // Base URL
-	APIVersion string `mapstructure:"api_version" json:"api_version"` // API version
+	BaseURL string `mapstructure:"base_url" json:"base_url"` // Base URL
 
-	// Organization/Project
-	OrgID     string `mapstructure:"org_id" json:"org_id"`
-	ProjectID string `mapstructure:"project_id" json:"project_id"`
+	OrgID string `mapstructure:"org_id" json:"org_id"`
 
-	// Region/Location
-	Region   string `mapstructure:"region" json:"region"`     // AWS/Azure region
-	Location string `mapstructure:"location" json:"location"` // GCP location
-
-	// Azure specific
-	AzureDeployment string `mapstructure:"azure_deployment" json:"azure_deployment"`
-	AzureEndpoint   string `mapstructure:"azure_endpoint" json:"azure_endpoint"`
-
-	// AWS Bedrock specific
-	AWSAccessKeyID     string `mapstructure:"aws_access_key_id" json:"aws_access_key_id"`
-	AWSSecretAccessKey string `mapstructure:"aws_secret_access_key" json:"aws_secret_access_key"`
-	AWSRegionName      string `mapstructure:"aws_region_name" json:"aws_region_name"`
-
-	// Vertex AI specific
-	VertexProject  string `mapstructure:"vertex_project" json:"vertex_project"`
-	VertexLocation string `mapstructure:"vertex_location" json:"vertex_location"`
-
-	// Reasoning model defaults
 	ReasoningEffort string `mapstructure:"reasoning_effort" json:"reasoning_effort,omitempty"`
 
-	// OAuth / Bearer token auth (e.g. Claude Max subscribers)
 	OAuthToken string `mapstructure:"oauth_token" json:"oauth_token,omitempty"`
 }
 
@@ -105,36 +79,15 @@ type ModelInfo struct {
 
 // RouterSettings contains load balancing and routing configuration
 type RouterSettings struct {
-	RoutingStrategy     string        `mapstructure:"routing_strategy" json:"routing_strategy"` // "simple", "least-busy", "usage-based", "latency-based", "priority", "weighted"
-	AllowedFailures     int           `mapstructure:"allowed_failures" json:"allowed_failures"` // Before marking unhealthy
-	CacheTTL            time.Duration `mapstructure:"cache_ttl" json:"cache_ttl"`               // Cache duration
-	DefaultTimeout      time.Duration `mapstructure:"default_timeout" json:"default_timeout"`
-	MaxRetries          int           `mapstructure:"max_retries" json:"max_retries"`
-	EnableLoadBalancing bool          `mapstructure:"enable_load_balancing" json:"enable_load_balancing"`
+	RoutingStrategy     string        `mapstructure:"routing_strategy" json:"routing_strategy"` // priority, least-latency, weighted-round-robin, random
 	HealthCheckInterval time.Duration `mapstructure:"health_check_interval" json:"health_check_interval"`
 
 	// Failover configuration
-	EnableFailover          bool                `mapstructure:"enable_failover" json:"enable_failover"`                       // Enable automatic failover
-	InstanceRetryAttempts   int                 `mapstructure:"instance_retry_attempts" json:"instance_retry_attempts"`       // Retry attempts per instance (default: 2)
-	ModelFallbacks          map[string]string   `mapstructure:"model_fallbacks" json:"model_fallbacks"`                       // Map of model -> fallback model (deprecated)
-	Fallbacks               map[string][]string `mapstructure:"fallbacks" json:"fallbacks"`                                   // Map of model -> fallback models array
-	FailoverTimeoutMultiple float64             `mapstructure:"failover_timeout_multiple" json:"failover_timeout_multiple"`   // Timeout multiplier for failover attempts (default: 1.5)
-	EnableModelFallback     bool                `mapstructure:"enable_model_fallback" json:"enable_model_fallback"`           // Enable fallback to different models
-}
-
-// FallbackChains contains fallback model chains for different failure scenarios
-type FallbackChains struct {
-	Fallbacks              map[string][]string `mapstructure:"fallbacks" json:"fallbacks"`                                     // Map of model -> fallback models array
-	ContextWindowFallbacks map[string][]string `mapstructure:"context_window_fallbacks" json:"context_window_fallbacks"`       // Fallbacks when context limit exceeded
-}
-
-// ModelGroup represents a logical grouping of model instances
-type ModelGroup struct {
-	Name         string   `mapstructure:"name" json:"name"`
-	Description  string   `mapstructure:"description" json:"description"`
-	Models       []string `mapstructure:"models" json:"models"` // Model instance IDs
-	DefaultModel string   `mapstructure:"default_model" json:"default_model"`
-	Tags         []string `mapstructure:"tags" json:"tags"`
+	EnableFailover          bool              `mapstructure:"enable_failover" json:"enable_failover"`                     // Enable automatic failover
+	InstanceRetryAttempts   int               `mapstructure:"instance_retry_attempts" json:"instance_retry_attempts"`     // Retry attempts per instance (default: 2)
+	ModelFallbacks          map[string]string `mapstructure:"model_fallbacks" json:"model_fallbacks"`                     // Map of model -> fallback model
+	FailoverTimeoutMultiple float64           `mapstructure:"failover_timeout_multiple" json:"failover_timeout_multiple"` // Timeout multiplier for failover attempts (default: 1.5)
+	EnableModelFallback     bool              `mapstructure:"enable_model_fallback" json:"enable_model_fallback"`         // Enable fallback to different models
 }
 
 // RouteConfig represents a route defined in config.yaml

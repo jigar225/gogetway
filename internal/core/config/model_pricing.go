@@ -153,7 +153,7 @@ func (pm *ModelPricingManager) LoadDefaultPricing(configDir string) error {
 		// Try current directory, then config directory
 		candidates := []string{
 			"model_prices_and_context_window.json",
-			"internal/config/model_prices_and_context_window.json",
+			"internal/core/config/model_prices_and_context_window.json",
 			"config/model_prices_and_context_window.json",
 		}
 		

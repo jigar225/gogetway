@@ -19,7 +19,6 @@ import (
 	"github.com/jigar225/goget/internal/services/llm/models"
 	"github.com/jigar225/goget/internal/services/monitoring/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -27,25 +26,10 @@ import (
 func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.ModelManager, db *gorm.DB, pricingManager *config.ModelPricingManager) http.Handler {
 	r := chi.NewRouter()
 
-	// Initialize Redis client
-	opt, err := redis.ParseURL(cfg.Redis.URL)
-	if err != nil {
-		logger.Fatal("Failed to parse Redis URL", zap.Error(err))
-	}
-
-	// Override with explicit password and DB if provided
-	if cfg.Redis.Password != "" {
-		opt.Password = cfg.Redis.Password
-	}
-	if cfg.Redis.DB != 0 {
-		opt.DB = cfg.Redis.DB
-	}
-
-	redisClient := redis.NewClient(opt)
-
-	// Test Redis connection
-	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		logger.Fatal("Failed to connect to Redis", zap.Error(err))
+	// Startup owns the shared Redis connection; tests may supply it through cache.Initialize.
+	redisClient := cache.GetClient()
+	if redisClient == nil {
+		logger.Fatal("Redis must be initialized before creating the router")
 	}
 
 	// Shared budget cache — load from Postgres on Redis miss (fail closed).
@@ -58,7 +42,7 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 	masterKeyService := auth.NewMasterKeyService(&auth.MasterKeyConfig{
 		DB:          db,
 		MasterKey:   cfg.Auth.MasterKey,
-		JWTSecret:   []byte(cfg.JWT.SecretKey),
+		JWTSecret:   []byte(cfg.Auth.JWTSecret),
 		JWTIssuer:   "goget",
 		TokenExpiry: 24 * time.Hour,
 	})
@@ -181,7 +165,7 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 	}
 
 	// Initialize system handler for auth config
-	systemHandler := admin.NewSystemHandler(logger, db)
+	systemHandler := admin.NewSystemHandler(logger, db, cfg)
 
 	// Public auth config (master key only)
 	r.Get("/api/auth/config", systemHandler.GetAuthConfig)
@@ -257,13 +241,13 @@ func NewRouter(cfg *config.Config, logger *zap.Logger, modelManager *models.Mode
 
 		// Create admin sub-router configuration
 		adminConfig := &AdminRouterConfig{
-			Config:             cfg,
-			Logger:             logger,
-			DB:                 db,
-			AuthService:        authService,
-			MasterKeyService:   masterKeyService,
-			ModelManager:       modelManager,
-			BudgetService: budgetService,
+			Config:           cfg,
+			Logger:           logger,
+			DB:               db,
+			AuthService:      authService,
+			MasterKeyService: masterKeyService,
+			ModelManager:     modelManager,
+			BudgetService:    budgetService,
 		}
 
 		// Mount admin routes at /api/admin

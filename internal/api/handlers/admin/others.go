@@ -268,10 +268,10 @@ type SystemHandler struct {
 	db     *gorm.DB
 }
 
-func NewSystemHandler(logger *zap.Logger, db *gorm.DB) *SystemHandler {
+func NewSystemHandler(logger *zap.Logger, db *gorm.DB, cfg *config.Config) *SystemHandler {
 	return &SystemHandler{
 		baseHandler: baseHandler{logger: logger},
-		config:      config.Get(),
+		config:      cfg,
 		db:          db,
 	}
 }
