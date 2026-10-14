@@ -76,7 +76,13 @@ func (c *Config) ValidateDependencies() error {
 		{"DATABASE_URL", c.Database.URL, "postgres"}, {"REDIS_URL", c.Redis.URL, "redis"},
 	} {
 		u, err := url.Parse(item.value)
-		if err != nil || u.Host == "" || !(u.Scheme == item.scheme || (item.scheme == "postgres" && u.Scheme == "postgresql") || (item.scheme == "redis" && u.Scheme == "rediss")) {
+		if err != nil || u.Host == "" {
+			return fmt.Errorf("%s must contain a valid connection URL", item.name)
+		}
+		validScheme := u.Scheme == item.scheme ||
+			(item.scheme == "postgres" && u.Scheme == "postgresql") ||
+			(item.scheme == "redis" && u.Scheme == "rediss")
+		if !validScheme {
 			return fmt.Errorf("%s must contain a valid connection URL", item.name)
 		}
 	}
@@ -100,7 +106,8 @@ func (c *Config) ValidateServer() error {
 			continue
 		}
 		enabled++
-		if model.Provider.APIKey == "" && !(model.Provider.Type == "anthropic" && model.Provider.OAuthToken != "") {
+		hasOAuthToken := model.Provider.Type == "anthropic" && model.Provider.OAuthToken != ""
+		if model.Provider.APIKey == "" && !hasOAuthToken {
 			return fmt.Errorf("model_list[%d] needs a provider API key (check its environment variable)", i)
 		}
 	}

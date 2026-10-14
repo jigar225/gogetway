@@ -1,3 +1,5 @@
+LINT_VERSION := v2.1.6
+
 .PHONY: help
 help: ## Show this help message
 	@echo 'Usage: make [target]'
@@ -100,7 +102,7 @@ test: ## Run tests
 
 .PHONY: test-coverage
 test-coverage: ## Run tests with coverage
-	go test -v -cover -coverprofile=coverage.txt ./...
+	go test -v -race -coverprofile=coverage.txt ./...
 
 .PHONY: test-integration
 test-integration: ## Run integration tests
@@ -115,9 +117,8 @@ test-performance: ## Run performance benchmarks and validate banking requirement
 	go test -v -timeout=60s ./internal/services/integration/ -run="TestPerformanceBenchmarks"
 
 .PHONY: lint
-lint: ## Run linter
-	@which golangci-lint > /dev/null || go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-	golangci-lint run
+lint: install-tools ## Run linter
+	  ./bin/tools/golangci-lint run
 
 .PHONY: fmt
 fmt: ## Format code
@@ -128,7 +129,7 @@ fmt: ## Format code
 
 .PHONY: install-tools
 install-tools: ## Install development tools
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+		GOBIN="$(CURDIR)/bin/tools" go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(LINT_VERSION)
 
 .PHONY: clean
 clean: ## Clean build artifacts

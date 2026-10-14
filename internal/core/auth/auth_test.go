@@ -141,11 +141,18 @@ func TestAuthService_ValidateKey(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("Validate Master Key", func(t *testing.T) {
-		validatedKey, err := authSvc.ValidateKey(ctx, "test-master-key")
+		masterCtx, err := authSvc.ValidateMasterKey(ctx, "test-master-key")
 		require.NoError(t, err)
-		assert.Equal(t, models.KeyTypeMaster, validatedKey.Type)
-		assert.Equal(t, "Master Key", validatedKey.Name)
-		assert.True(t, validatedKey.IsActive)
+		require.NotNil(t, masterCtx)
+		assert.Equal(t, models.KeyTypeMaster, masterCtx.KeyType)
+		assert.True(t, masterCtx.IsActive)
+		assert.Contains(t, masterCtx.Scopes, "*")
+	})
+
+	t.Run("Reject Master Key As API Key", func(t *testing.T) {
+		validatedKey, err := authSvc.ValidateKey(ctx, "test-master-key")
+		require.ErrorIs(t, err, ErrInvalidAPIKey)
+		assert.Nil(t, validatedKey)
 	})
 
 	t.Run("Validate API Key", func(t *testing.T) {
