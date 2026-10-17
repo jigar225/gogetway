@@ -20,7 +20,7 @@ spec:
          - name: ecr-registry
       containers:
         - name: gateway
-          image: 798644229154.dkr.ecr.us-east-1.amazonaws.com/gogate-dev/gateway:e1b82dec4ad2bd37830e38a15a1f9b6eb09409e2
+          image: 798644229154.dkr.ecr.us-east-1.amazonaws.com/gogate-dev/gateway:9eee62f353abd34ed9332a18fd314189e3a50c53
           imagePullPolicy: Always
           ports:
             - name: http
